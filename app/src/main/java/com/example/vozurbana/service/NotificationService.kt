@@ -1,155 +1,235 @@
 package com.example.vozurbana.service
 
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.content.Context
-import android.os.Build
-import androidx.core.app.NotificationCompat
 import androidx.work.*
-import com.google.gson.Gson
-import com.google.gson.JsonObject
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.*
 import okhttp3.*
+import okio.ByteString
 import java.util.concurrent.TimeUnit
 
-class NotificationWorker(
-    context: Context,
-    params: WorkerParameters
-) : CoroutineWorker(context, params) {
+class NotificationService(private val context: Context) {
 
-    private val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    private var webSocket: WebSocket? = null
+    private var isConnected = false
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .build()
 
-    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
-        try {
-            createNotificationChannel()
-            connectToWebSocket()
-            Result.success()
-        } catch (e: Exception) {
-            println("Worker error: ${e.message}")
-            Result.retry()
-        }
+    // Callbacks para notificar cambios a la UI
+    var onNewReport: ((reportId: Int, titulo: String) -> Unit)? = null
+    var onStatusChange: ((reportId: Int, newStatus: String, oldStatus: String) -> Unit)? = null
+    var onConnectionChange: ((isConnected: Boolean) -> Unit)? = null
+
+    fun startNotificationListener() {
+        println("🔄 Iniciando servicio de notificaciones WebSocket...")
+
+        // Usar WorkManager para el trabajo en segundo plano
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+
+        val notificationWork = OneTimeWorkRequestBuilder<NotificationWorker>()
+            .setConstraints(constraints)
+            .setInitialDelay(2, TimeUnit.SECONDS)
+            .build()
+
+        WorkManager.getInstance(context).enqueue(notificationWork)
+
+        // También intentar conexión directa
+        connectToWebSocket()
+    }
+
+    fun stopNotificationListener() {
+        println("🛑 Deteniendo servicio de notificaciones...")
+        webSocket?.close(1000, "Cerrando conexión")
+        webSocket = null
+        isConnected = false
+        onConnectionChange?.invoke(false)
+
+        // Cancelar trabajos de WorkManager
+        WorkManager.getInstance(context).cancelAllWorkByTag("notification_websocket")
     }
 
     private fun connectToWebSocket() {
-        val client = OkHttpClient()
         val request = Request.Builder()
-            .url("ws://10.0.2.2:3000/ws") // IP correcta para emulador Android
+            .url("ws://192.168.0.102:3000/ws") // IP real de tu red
             .build()
 
         val listener = object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                println("✅ WebSocket conectado desde Wear OS")
-                // Suscribirse a notificaciones
-                val subscribeMessage = """{"type": "subscribe"}"""
+                println("✅ WebSocket conectado correctamente")
+                isConnected = true
+                onConnectionChange?.invoke(true)
+
+                // Suscribirse a notificaciones usando el formato que espera el backend
+                val subscribeMessage = """
+                    {
+                        "type": "subscribe"
+                    }
+                """.trimIndent()
+
+                println("📤 Suscribiéndose a notificaciones: $subscribeMessage")
                 webSocket.send(subscribeMessage)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                println("📨 Mensaje recibido en Wear OS: $text")
-                handleNotification(text)
+                println("📨 Mensaje WebSocket recibido: $text")
+                handleWebSocketMessage(text)
             }
 
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                println("❌ WebSocket error: ${t.message}")
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                println("📨 Mensaje binario WebSocket recibido")
+            }
+
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                println("⚠️ WebSocket cerrándose: $code - $reason")
+                isConnected = false
+                onConnectionChange?.invoke(false)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                println("❌ WebSocket closed: $code - $reason")
+                println("🔴 WebSocket cerrado: $code - $reason")
+                isConnected = false
+                onConnectionChange?.invoke(false)
+
+                // Intentar reconectar después de 5 segundos
+                CoroutineScope(Dispatchers.IO).launch {
+                    delay(5000)
+                    if (!isConnected) {
+                        println("🔄 Intentando reconectar WebSocket...")
+                        connectToWebSocket()
+                    }
+                }
+            }
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                println("❌ Error en WebSocket: ${t.message}")
+                isConnected = false
+                onConnectionChange?.invoke(false)
+
+                // Intentar reconectar después de 10 segundos
+                CoroutineScope(Dispatchers.IO).launch {
+                    delay(10000)
+                    if (!isConnected) {
+                        println("🔄 Reintentando conexión WebSocket tras error...")
+                        connectToWebSocket()
+                    }
+                }
             }
         }
 
-        val webSocket = client.newWebSocket(request, listener)
-
-        // Mantener la conexión viva por un tiempo
-        Thread.sleep(30000) // 30 segundos para prueba
-        webSocket.close(1000, "Trabajo completado")
+        webSocket = client.newWebSocket(request, listener)
     }
 
-    private fun handleNotification(message: String) {
+    private fun handleWebSocketMessage(message: String) {
         try {
-            val gson = Gson()
-            val jsonObject = gson.fromJson(message, JsonObject::class.java)
+            println("📨 Procesando mensaje: $message")
 
-            when (jsonObject.get("type")?.asString) {
-                "new_report" -> {
-                    val data = jsonObject.getAsJsonObject("data")
-                    val title = data.get("titulo")?.asString ?: "Nuevo Reporte"
-                    showNotification("🚨 $title", "Nuevo reporte creado en Voz Urbana")
+            when {
+                message.contains("\"type\":\"new_report\"") -> {
+                    // Estructura: { type: 'new_report', data: { reportId, titulo, ... } }
+                    val reportId = extractNestedJsonValue(message, "data", "reportId")?.toIntOrNull() ?: 0
+                    val titulo = extractNestedJsonValue(message, "data", "titulo") ?: "Nuevo reporte"
+
+                    println("📋 Nuevo reporte detectado: ID=$reportId, Título=$titulo")
+                    onNewReport?.invoke(reportId, titulo)
                 }
-                "status_change" -> {
-                    val data = jsonObject.getAsJsonObject("data")
-                    val title = data.get("titulo")?.asString ?: "Reporte"
-                    val status = data.get("newStatus")?.asString ?: "actualizado"
-                    showNotification("📝 $title", "Estado cambiado a: $status")
+
+                message.contains("\"type\":\"status_change\"") -> {
+                    // Estructura: { type: 'status_change', data: { reportId, oldStatus, newStatus } }
+                    val reportId = extractNestedJsonValue(message, "data", "reportId")?.toIntOrNull() ?: 0
+                    val newStatus = extractNestedJsonValue(message, "data", "newStatus") ?: ""
+                    val oldStatus = extractNestedJsonValue(message, "data", "oldStatus") ?: ""
+
+                    println("📝 Cambio de estado detectado: ID=$reportId, $oldStatus -> $newStatus")
+                    onStatusChange?.invoke(reportId, newStatus, oldStatus)
                 }
-                "pending_reports" -> {
-                    val data = jsonObject.getAsJsonObject("data")
-                    val count = data.get("count")?.asInt ?: 0
-                    showNotification("⏰ Reportes Pendientes", "$count reportes requieren atención")
+
+                message.contains("\"type\":\"connected\"") -> {
+                    println("🔗 Mensaje de conexión recibido del servidor")
+                }
+
+                message.contains("\"type\":\"pong\"") -> {
+                    println("🏓 Pong recibido del servidor")
+                }
+
+                else -> {
+                    println("📨 Mensaje WebSocket no reconocido: $message")
                 }
             }
         } catch (e: Exception) {
-            println("Error procesando notificación: ${e.message}")
-            showNotification("📨 Nueva Notificación", "Mensaje recibido de Voz Urbana")
+            println("❌ Error procesando mensaje WebSocket: ${e.message}")
         }
     }
 
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Voz Urbana Notifications",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "Notificaciones de reportes de Voz Urbana"
-            }
-            notificationManager.createNotificationChannel(channel)
+    // Función helper para extraer valores JSON (básica)
+    private fun extractJsonValue(json: String, key: String): String? {
+        val pattern = "\"$key\"\\s*:\\s*\"([^\"]*)\"|\"$key\"\\s*:\\s*([^,}\\s]*)"
+        val regex = Regex(pattern)
+        val matchResult = regex.find(json)
+        return matchResult?.groupValues?.let { groups ->
+            groups[1].takeIf { it.isNotEmpty() } ?: groups[2].takeIf { it.isNotEmpty() }
         }
     }
 
-    private fun showNotification(title: String, content: String) {
-        val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle(title)
-            .setContentText(content)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(content))
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setAutoCancel(true)
-            .build()
+    // Función helper para extraer valores JSON anidados
+    private fun extractNestedJsonValue(json: String, parentKey: String, childKey: String): String? {
+        // Buscar el objeto padre
+        val parentPattern = "\"$parentKey\"\\s*:\\s*\\{([^}]*)"
+        val parentRegex = Regex(parentPattern)
+        val parentMatch = parentRegex.find(json)
 
-        notificationManager.notify(System.currentTimeMillis().toInt(), notification)
+        return parentMatch?.groupValues?.get(1)?.let { parentContent ->
+            // Dentro del objeto padre, buscar la clave hija
+            extractJsonValue("{ $parentContent }", childKey)
+        }
     }
 
-    companion object {
-        const val CHANNEL_ID = "voz_urbana_channel"
+    fun isConnectedToWebSocket(): Boolean = isConnected
+}
+
+// Worker para manejar notificaciones en segundo plano
+class NotificationWorker(
+    context: Context,
+    workerParams: WorkerParameters
+) : CoroutineWorker(context, workerParams) {
+
+    override suspend fun doWork(): Result {
+        return try {
+            println("🔄 NotificationWorker ejecutándose...")
+
+            // Aquí puedes agregar lógica adicional para verificar el estado
+            // de los reportes periódicamente o manejar notificaciones push
+
+            delay(5000) // Simular trabajo
+
+            println("✅ NotificationWorker completado")
+            Result.success()
+        } catch (e: Exception) {
+            println("❌ Error en NotificationWorker: ${e.message}")
+            Result.failure()
+        }
     }
 }
 
-class NotificationService(
-    private val context: Context
-) {
-
-    fun startNotificationListener() {
-        val workRequest = PeriodicWorkRequestBuilder<NotificationWorker>(
-            15, TimeUnit.MINUTES // Verificar cada 15 minutos
-        ).build()
-
-        WorkManager.getInstance(context).enqueueUniquePeriodicWork(
-            "notification_worker",
-            ExistingPeriodicWorkPolicy.REPLACE, // Cambié de KEEP a REPLACE
-            workRequest
-        )
+// Extensión para facilitar el uso del servicio
+fun NotificationService.attachToViewModel(viewModel: com.example.vozurbana.presentation.viewmodel.MainViewModel) {
+    this.onNewReport = { reportId, titulo ->
+        println("🔔 Notificando nuevo reporte al ViewModel: $reportId - $titulo")
+        // Recargar todos los reportes para mostrar el nuevo
+        viewModel.refreshReports()
     }
 
-    fun startImmediateNotificationTest() {
-        val workRequest = OneTimeWorkRequestBuilder<NotificationWorker>()
-            .build()
-
-        WorkManager.getInstance(context).enqueue(workRequest)
+    this.onStatusChange = { reportId, newStatus, oldStatus ->
+        println("🔔 Notificando cambio de estado al ViewModel: $reportId $oldStatus -> $newStatus")
+        // Recargar todos los reportes para reflejar el cambio de estado
+        viewModel.refreshReports()
     }
 
-    fun stopNotificationListener() {
-        WorkManager.getInstance(context).cancelUniqueWork("notification_worker")
+    this.onConnectionChange = { isConnected ->
+        println("🔔 Estado de conexión WebSocket: ${if (isConnected) "Conectado" else "Desconectado"}")
+        // Aquí podrías actualizar el UI para mostrar el estado de conexión
     }
 }
