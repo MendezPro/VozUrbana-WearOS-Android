@@ -8,10 +8,12 @@ fun VozurbanaTheme(
     content: @Composable () -> Unit
 ) {
     /**
-     * Empty theme to customize for your app.
-     * See: https://developer.android.com/jetpack/compose/designsystems/custom
+     * Tema personalizado para la aplicación Voz Urbana en Wear OS
+     * Utiliza los colores y tipografía de Material Design para Wear
      */
     MaterialTheme(
+        /* colors = ..., */
+        /* typography = ..., */
         content = content
     )
 }
