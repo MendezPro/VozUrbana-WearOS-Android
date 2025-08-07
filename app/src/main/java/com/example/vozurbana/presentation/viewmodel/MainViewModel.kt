@@ -70,7 +70,7 @@ class MainViewModel : ViewModel() {
         loadNewReports()
     }
 
-    // Método para actualizar reportes cuando llegue una notificación WebSocket
+    // Método para actualizar reportes cuando llegue una notificación WebSocket :)
     fun onNewReportNotification(report: Report) {
         viewModelScope.launch {
             val currentReports = _newReports.value.toMutableList()
