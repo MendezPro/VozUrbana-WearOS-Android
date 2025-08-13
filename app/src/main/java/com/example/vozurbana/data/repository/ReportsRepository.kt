@@ -16,7 +16,7 @@ class ReportsRepository {
     // Crear la instancia de la API directamente
     private val api: VozUrbanaAPI by lazy {
         Retrofit.Builder()
-            .baseUrl("http://192.168.0.102:3000/api/")
+            .baseUrl("http://192.168.0.103:3000/api/")
             .addConverterFactory(GsonConverterFactory.create())
             .build()
             .create(VozUrbanaAPI::class.java)

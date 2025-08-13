@@ -266,7 +266,7 @@ enum class ReportTab(val displayName: String, val statusValue: String) {
 
 // Enum para las acciones disponibles en cada reporte
 enum class ReportAction(val displayName: String, val newStatusValue: String) {
-    MARK_IN_PROCESS("Marcar en Proceso", ReportStatus.EN_PROCESO.value),
+    MARK_IN_PROCESS("✔", ReportStatus.EN_PROCESO.value),
     MARK_RESOLVED("Marcar Resuelto", ReportStatus.RESUELTO.value),
     MARK_CLOSED("Marcar Cerrado", ReportStatus.CERRADO.value),
     REJECT("Rechazar", ReportStatus.NO_APROBADO.value)
