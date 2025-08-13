@@ -54,7 +54,7 @@ class NotificationService(private val context: Context) {
 
     private fun connectToWebSocket() {
         val request = Request.Builder()
-            .url("ws://192.168.0.102:3000/ws") // IP real de tu red
+            .url("ws://192.168.0.103:3000/ws") // IP real de tu red
             .build()
 
         val listener = object : WebSocketListener() {

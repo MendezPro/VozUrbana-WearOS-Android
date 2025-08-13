@@ -58,8 +58,8 @@ object AuthManager {
 
     // Token JWT válido generado con el mismo secret del backend
     private fun generateValidAdminToken(): String {
-        // Este token es válido y fue generado usando el secret "tu_secreto_jwt"
-        val validToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInJvbCI6ImFkbWluIiwiaWF0IjoxNzU0NTU1MTU2LCJleHAiOjE3NTQ2NDE1NTZ9.ZR3UumPJk9inQ_oxfdFqUsASXToNr2D66q6YOJ4HARk"
+        // Este token es válido y fue generado """"
+        val validToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInJvbCI6ImFkbWluIiwiaWF0IjoxNzU1MDc5Mzk5LCJleHAiOjE3NTUxNjU3OTl9.0Ir7JSoixME8PwTXvg92YHljmLrg8sIOf1T3EedSCgY"
 
         // Guardar el token
         sharedPreferences?.edit()?.putString(TOKEN_KEY, validToken)?.apply()
